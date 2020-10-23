@@ -50,7 +50,7 @@ def main(file_path1: str, file_path2: str):
         elif isinstance(obj1, np.ndarray):
             assert np.array_equal(obj1, obj2), f"{obj1} != {obj2}"
         else:
-            assert obj1 == obj2
+            assert obj1 == obj2, f"{obj1} != {obj2}"
     print("Everything looks the same, hurrah.")
 
 
