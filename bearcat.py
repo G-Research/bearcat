@@ -6,6 +6,7 @@ import sys
 import os
 import importlib
 import contextvars
+import pickle
 from pathlib import Path
 
 
@@ -38,7 +39,7 @@ def _add_call_to_stack(in_pandas: bool):
     """
     try:
         stack = _in_pandas_call_context.get()
-    except contextvars.LookupError:
+    except LookupError:
         stack = []
         _in_pandas_call_context.set(stack)
     stack.append(in_pandas)
@@ -48,7 +49,11 @@ def _remove_call_from_stack():
     """
     We've returned from function, so pop it off the stack.
     """
-    _in_pandas_call_context.get().pop()
+    try:
+        _in_pandas_call_context.get().pop()
+    except LookupError:
+        # TODO could be a bug, but also happens in initial setup...
+        pass
 
 
 def _has_ancestor_pandas_call() -> bool:
@@ -79,11 +84,12 @@ class DumpPandasResults:
     def __init__(self, pandas_module_name):
         self.pandas = importlib.import_module(pandas_module_name)
         # TODO We assume it's a package...
-        self.pandas_dir = Path(self.pandas.__file__).absolute().parent()
+        self.pandas_dir = Path(self.pandas.__file__).resolve().parent
         self.to_pandas = {
             "pandas": _to_pandas_from_pandas,
             "modin.pandas": _to_pandas_from_modin,
         }[pandas_module_name]
+        self.output = open(f"bearcat-output-{pandas_module_name}.pkl", "wb")
 
     def trace(self):
         """
@@ -91,6 +97,13 @@ class DumpPandasResults:
         """
         # TODO threading?
         sys.setprofile(self._tracer)
+
+    def _dump(self, obj):
+        """
+        Write an object to disk for later comparison.
+        """
+        pickle.dump(obj, self.output, pickle.HIGHEST_PROTOCOL)
+        self.output.flush()
 
     def _tracer(self, frame, event, arg):
         """
@@ -101,9 +114,7 @@ class DumpPandasResults:
         as an actual-Pandas DataFrame.
         """
         # Is this API call inside the Pandas-alike?
-        in_pandas = (
-            Path(frame.f_code.co_filename).absolute().is_relative_to(self.pandas_dir)
-        )
+        in_pandas = self.pandas_dir in Path(frame.f_code.co_filename).resolve().parents
 
         # On function entry, add in-Pandas status to stack:
         if event in ("call", "c_call"):
@@ -124,7 +135,7 @@ class DumpPandasResults:
 
 
 def _setup():
-    pandas_module_name = os.env["BEARCAT_PANDAS"]
+    pandas_module_name = os.environ["BEARCAT_PANDAS"]
 
     # Setup the logic:
     global _dumper
